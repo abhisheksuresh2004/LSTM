@@ -1,10 +1,53 @@
-import pennylane as qml
-from pennylane import numpy as np
+import pandas as pd
+import numpy as np
 import torch
-import torch.nn as nn
-import torch.optim as optim
+from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import train_test_split
 
-# Advanced Quantum LSTM Cell
+# Load the dataset
+ddos_data = pd.read_csv('Friday-WorkingHours-Afternoon-DDos.pcap_ISCX.csv')
+
+# Basic preprocessing
+# Assuming the dataset has a target column named 'Label' which we need to predict
+# and that all other columns are features. Modify according to the actual dataset.
+features = ddos_data.drop(columns=['Label'])
+target = ddos_data['Label'].apply(lambda x: 1 if x == 'ddos' else 0)  # Convert to binary target
+
+# Normalize the features
+scaler = StandardScaler()
+features = scaler.fit_transform(features)
+
+# Convert to torch tensors
+features = torch.tensor(features, dtype=torch.float32)
+target = torch.tensor(target.values, dtype=torch.float32).unsqueeze(1)
+
+# Split the data into sequences
+sequence_length = 10  # Length of each time series sequence
+def create_sequences(features, target, seq_length):
+    sequences = []
+    labels = []
+    for i in range(len(features) - seq_length):
+        seq = features[i:i+seq_length]
+        label = target[i+seq_length]
+        sequences.append(seq)
+        labels.append(label)
+    return torch.stack(sequences), torch.stack(labels)
+
+# Create sequences from the dataset
+sequences, labels = create_sequences(features, target, sequence_length)
+
+# Split into train and test sets
+train_features, test_features, train_labels, test_labels = train_test_split(sequences, labels, test_size=0.2, random_state=42)
+
+# Convert to DataLoader for batching
+train_dataset = torch.utils.data.TensorDataset(train_features, train_labels)
+test_dataset = torch.utils.data.TensorDataset(test_features, test_labels)
+
+train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=32, shuffle=True)
+test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=32, shuffle=False)
+
+
+
 class AdvancedQuantumLSTMCell(nn.Module):
     def __init__(self, n_qubits, n_layers):
         super(AdvancedQuantumLSTMCell, self).__init__()
@@ -76,10 +119,12 @@ class HybridLoss(nn.Module):
                       (1 - self.classical_loss_weight) * quantum_loss)
         return total_loss
 
+
+
 # Example usage
 n_qubits = 8
 n_layers = 2
-input_size = 20  # Number of features
+input_size = train_features.shape[-1]  # Number of features
 hidden_size = 8  # Should match the number of qubits
 output_size = 1  # Predicting a single value (DDoS or not)
 
@@ -87,22 +132,31 @@ model = AdvancedLSTMNetwork(input_size, hidden_size, output_size, n_qubits, n_la
 criterion = HybridLoss()
 optimizer = optim.Adam(model.parameters(), lr=0.001)
 
-# Sample data for DDoS attack prediction
-sample_input = torch.randn(10, 5, input_size)  # Batch of 10 sequences of length 5 with 'input_size' features each
-sample_target = torch.randint(0, 2, (10, 1)).float()  # Binary target for DDoS prediction
-
-# Training loop (example)
-for epoch in range(100):
+# Training loop
+epochs = 20
+for epoch in range(epochs):
     model.train()
-    optimizer.zero_grad()
-
-    output = model(sample_input)
-    loss = criterion(output, output, sample_target)
+    total_loss = 0
+    for batch_idx, (batch_features, batch_labels) in enumerate(train_loader):
+        optimizer.zero_grad()
+        output = model(batch_features)
+        loss = criterion(output, output, batch_labels)
+        loss.backward()
+        optimizer.step()
+        total_loss += loss.item()
     
-    loss.backward()
-    optimizer.step()
+    print(f"Epoch {epoch+1}/{epochs}, Loss: {total_loss/len(train_loader)}")
 
-    print(f"Epoch {epoch+1}, Loss: {loss.item()}")
+# Test the model
+model.eval()
+correct = 0
+total = 0
+with torch.no_grad():
+    for batch_features, batch_labels in test_loader:
+        output = model(batch_features)
+        predicted = (output > 0.5).float()  # Threshold for binary classification
+        total += batch_labels.size(0)
+        correct += (predicted == batch_labels).sum().item()
 
-print("Predicted output:", output)
+print(f'Accuracy: {100 * correct / total}%')
 
